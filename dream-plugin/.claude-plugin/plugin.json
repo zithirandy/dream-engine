@@ -1,0 +1,7 @@
+{
+  "name": "autodream",
+  "description": "AutoDream —— 自建记忆整合引擎（自动梦 + 手动梦）。模型可见面只有 /dream 与 /dream-status；引擎不含任何 LLM 客户端。",
+  "author": {
+    "name": "local"
+  }
+}

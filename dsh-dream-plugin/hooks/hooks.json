@@ -1,0 +1,35 @@
+{
+  "_comment": [
+    "DSH 侧的 hooks 配置，交给 @deepseek-ai/dsh-hooks-claude-code 桥执行。",
+    "桥的配置项是 configPath（指向本文件）。支持集（桥 README 明确列出）：",
+    "  SessionStart / UserPromptSubmit / PreToolUse / PostToolUse / Stop / SubagentStart / SubagentStop。",
+    "故这里**故意不含 SessionEnd** —— 桥不支持，且 DSH 侧本不需要（会话逐帧压缩，尾帧不完整自然跳过）。",
+    "命令与 Claude Code 侧完全一致：都是转发给已安装运行时的 nudge.cjs。"
+  ],
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/hook.cjs\" SessionStart",
+            "timeout": 10,
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/hook.cjs\" Stop",
+            "timeout": 3,
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ]
+  }
+}

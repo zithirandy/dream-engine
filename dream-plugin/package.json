@@ -1,0 +1,23 @@
+{
+  "name": "autodream",
+  "version": "0.1.0-p0",
+  "private": true,
+  "description": "AutoDream 自建插件 —— 双宿主（Claude Code / DSH）记忆整合引擎。P0 地基：常驻引擎 + 薄 hook + 状态/锁/token + git 化。",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "main": "src/daemon.cjs",
+  "bin": {
+    "dreamctl": "src/cli.cjs",
+    "dreamd": "src/daemon.cjs"
+  },
+  "scripts": {
+    "status": "node src/cli.cjs status",
+    "doctor": "node src/cli.cjs doctor",
+    "start": "node src/cli.cjs start",
+    "stop": "node src/cli.cjs stop"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}

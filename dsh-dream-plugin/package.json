@@ -1,0 +1,32 @@
+{
+  "name": "dsh-dream-plugin",
+  "version": "0.1.0-wip",
+  "private": true,
+  "description": "AutoDream 的 DSH 宿主适配（P4）。仅含薄适配 + 会话转录适配器；引擎复用 ~/.claude/.dream/bin/，不复制。零依赖。",
+  "license": "MIT",
+  "main": "src/index.mjs",
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {},
+  "devDependencies": {},
+  "_notes": {
+    "node": "会话适配器依赖 Node 内置 zstd（zlib.zstdDecompressSync），故 engines 要求 >=24；引擎本身仍为 >=18。",
+    "state": "P4：四项前置接口已核实（会话落盘/格式完全摸清；Schedule 语义已确认；Stop 经 CC-hook 桥支持）；适配器 + 采集 + 插件入口均已离线验证。未装入 DSH（用户要求暂不接线）。"
+  },
+  "type": "module",
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tools": "^0.1.5-rc.1"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "files": [
+    "src",
+    "hooks",
+    "cordis.patch.yml",
+    "README.md"
+  ]
+}

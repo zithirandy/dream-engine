@@ -1,0 +1,15 @@
+# 统一行尾：仓库内一律 LF，检出到 Windows 也保持 LF（引擎是 Node 脚本，无需 CRLF）
+* text=auto eol=lf
+
+# 明确按文本处理的类型
+*.cjs  text eol=lf
+*.mjs  text eol=lf
+*.js   text eol=lf
+*.json text eol=lf
+*.md   text eol=lf
+*.yml  text eol=lf
+
+# 二进制（避免被当作文本处理）
+*.zstd binary
+*.png  binary
+*.jpg  binary

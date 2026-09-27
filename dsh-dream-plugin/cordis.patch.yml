@@ -1,0 +1,7 @@
+# dsh-dream-plugin bundle patch：把本插件插入 web profile 的 roster。
+# 由 `dsh.bundle.patch` 清单字段声明，作为 profile 的一个 bundle 层应用。
+# 安装：
+#   dsh plugin --profile web add file:F:\Demo\dream-src\dsh-dream-plugin
+- insert:
+    - id: autodream-dsh
+      name: dsh-dream-plugin

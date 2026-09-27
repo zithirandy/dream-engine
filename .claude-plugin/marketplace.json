@@ -1,0 +1,15 @@
+{
+  "name": "dream-engine",
+  "owner": {
+    "name": "zithirandy",
+    "url": "https://github.com/zithirandy"
+  },
+  "plugins": [
+    {
+      "name": "autodream",
+      "source": "./dream-plugin",
+      "description": "自托管记忆整合引擎（Claude Code 宿主）：会话转录 → 候选提炼 → 外部打分 → 阈值决策 → 写入受控记忆库。模型可见面只有 /dream 与 /dream-status；引擎不含任何 LLM 客户端。",
+      "version": "0.1.0"
+    }
+  ]
+}

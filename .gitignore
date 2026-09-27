@@ -1,0 +1,35 @@
+# 依赖与构建产物
+node_modules/
+package-lock.json
+pnpm-lock.yaml
+
+# 引擎运行态（绝不入库：含 token、状态、候选、日志、提案、生成的报告）
+.dream/
+**/.dream/
+raw/
+logs/
+candidates/
+rejected/
+proposals/
+reports/
+state.json
+token
+*.lock
+lock
+
+# 打分服务出网审计与本地转录（可能含未脱敏内容）
+logs/redacted/
+*.jsonl
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 临时与调试
+*.tmp
+*.bak
+*.log
+_tmp/
