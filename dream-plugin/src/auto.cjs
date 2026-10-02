@@ -94,7 +94,19 @@ function readAutoOffsets() {
   if (!fs.existsSync(f)) return { pendingOffset: 0, updatedAt: null, lastRunAt: null };
   try {
     const j = JSON.parse(fs.readFileSync(f, 'utf8'));
-    return { pendingOffset: Number(j.pendingOffset) || 0, updatedAt: j.updatedAt || null, lastRunAt: j.lastRunAt || null };
+    // ★ 修正（2026-09-28）：此前**只回传 3 个字段**，而 `writeAutoOffsets` 写入的
+    //   `primed` / `rotatedAt` / `consumed` / `trigger` / `note` 被**读后即弃**。
+    //   后果是 `cli.cjs` 里两条诊断分支成了死代码 —— `offs.primed ? ' · 已预热…'`
+    //   与 `offs.rotatedAt ? ' · 上次轮转…'` **永远不会显示**，即使文件里确实有值
+    //   （实测磁盘上的 auto-offsets.json 就带 consumed/trigger，却看不到）。
+    //   改为**透传全部字段**：消费方只取自己要用的，多余字段无害。
+    //   ⚠️ 三个"必有"字段仍显式归一化，保持原有契约不变。
+    return {
+      ...j,
+      pendingOffset: Number(j.pendingOffset) || 0,
+      updatedAt: j.updatedAt || null,
+      lastRunAt: j.lastRunAt || null,
+    };
   } catch { return { pendingOffset: 0, updatedAt: null, lastRunAt: null, corrupt: true }; }
 }
 
@@ -314,7 +326,10 @@ async function runRound({ cfg, deps, reason = 'manual', force = false } = {}) {
       policy: d.policy && { effectiveMode: d.policy.effectiveMode, allow: d.policy.allow, conflict: d.policy.conflict },
       selected: d.selected, jevCalls: d.scoring && d.scoring.calls,
       decisions: d.decisions && { promote: d.decisions.promote, hold: d.decisions.hold, reject: d.decisions.reject },
-      promoted: d.applied && d.applied.promoted && d.applied.promoted.filter((x) => x.ok).length,
+      // ★ 2026-09-30：只把**真正新写入**的算作提升；`refreshed`（正文逐字相同、
+      //   只重算元数据）单列 —— 否则"同一条目反复提升"在轮次日志里看起来像持续产出。
+      promoted: d.applied && d.applied.promoted && d.applied.promoted.filter((x) => x.ok && !x.refreshed).length,
+      refreshed: d.applied && d.applied.promoted && d.applied.promoted.filter((x) => x.ok && x.refreshed).length,
       refused: d.applied && d.applied.refused,
       durationMs: d.durationMs,
     };

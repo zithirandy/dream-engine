@@ -222,6 +222,50 @@ node src/cli.cjs guard               # 写入策略 + 与官方 AutoDream 的冲
 node src/cli.cjs config diff         # 配置体检（差异 + 孤儿键）
 ```
 
+## GitHub 动态采集（可选，默认**关闭**）
+
+除了整合会话记忆，引擎还能按需采集仓库动态：issue、issue 评论、PR、PR review、
+review 评论，与本地上轮快照比对出**增量**，渲染成中文 Markdown 日报。
+
+```bash
+node src/cli.cjs github doctor       # 体检：gh / 凭据 / API 连通 / 仓库可达 / 报告目录可写
+node src/cli.cjs github now          # 立刻采一轮（忽略内置日闸门）
+node src/cli.cjs github now --dry    # 干跑预览：不落文件、不推进游标
+node src/cli.cjs github run          # 按内置日闸门跑（供系统级调度器调用）
+node src/cli.cjs github status       # 配置 + 闸门判定 + 最近几轮
+node src/cli.cjs github log          # 每轮一行 JSON 的结构化日志
+```
+
+**调度不在引擎里。** 引擎不做系统级定时；请用你宿主的定时机制（Windows 计划任务 /
+cron / DSH 任务看板等）调用 `github run` 或 `github now`，建议每早 8 点。
+
+主要配置（`~/.claude/.dream/config.json` 的 `github` 段）：
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `enabled` | `false` | 总开关。装载插件不等于同意它每天出网，故默认关 |
+| `repos` | `[]` | 要采集的仓库，`["owner/name", ...]` |
+| `transport` | `"gh"` | `gh` 或 `rest`（见下） |
+| `tokenSource` | `"gh"` | `gh` / `settings:NAME` / `env:NAME` |
+| `report.dir` | `null` | 报告输出目录；`null` → `<DREAM_HOME>/github-reports` |
+| `report.writeUnchanged` | `true` | 零变化日是否也落一份报告 |
+| `report.includeBodyChars` | `3000` | 每条正文渲染上限 |
+| `report.redactCredentials` | `true` | 报告正文过脱敏（防止别人在 issue 里贴的 token 被本地留存） |
+| `collection.schedule` | `"08:00"` | 内置日闸门的应跑时刻（仅 `github run` 生效） |
+| `collection.maxPages` | `5` | **硬性页上限**（见下） |
+
+**关于传输层**：默认走 `gh`（GitHub CLI），要求 `gh auth login` 过。
+这样凭据留在系统凭据管理器里，**从不落进本插件的任何文件**。
+
+> ⚠️ **为什么默认不是 `fetch`**：若本机用 hosts 把 `api.github.com` 指向本地代理
+> （常见的"GitHub 加速"方案），Node 的 `fetch` 会因证书链不受信而失败
+> （`UNABLE_TO_VERIFY_LEAF_SIGNATURE`），而 `gh` 读系统证书库故正常。
+> 这类环境请保持 `transport: "gh"`；标准环境可切 `rest` 并配 `settings:GITHUB_TOKEN`。
+
+> ⚠️ **为什么有 `maxPages` 硬上限**：`gh api --paginate` **没有页数上限**，
+> 对 issue 极多的仓库会长时间不返回。采集器因此自己逐页翻页并受此值约束，
+> 触顶会在报告里显式告警，而不是静默给半份数据。
+
 ## 卸载 / 回滚
 
 ```bash

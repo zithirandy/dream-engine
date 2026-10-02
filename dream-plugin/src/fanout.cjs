@@ -23,6 +23,7 @@ const jev = require('./jev.cjs');
 const redactMod = require('./redact.cjs');
 const memoryMod = require('./memory.cjs');
 const guardMod = require('./guard.cjs');
+const gitops = require('./gitops.cjs');
 
 /**
  * 由项目记忆派生紧凑描述（供 G2 相关性判断使用）。
@@ -215,8 +216,32 @@ function applyFanout(experienceSlug, hits, { cfg, policy } = {}) {
       target: `file:///${globalFile.replace(/\\/g, '/')}`,
       description: c.global && c.global.pointerDescription ? c.global.pointerDescription : '同类问题跨项目通用',
     });
-    if (r.ok && r.changed) applied.push({ project: h.project, action: r.action, path: target });
-    else skipped.push(h.project);
+    if (!r.ok || !r.changed) { skipped.push(h.project); continue; }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // ★ 修正（2026-10-01）：写完指针**必须提交** —— 此前本模块**零 git 引用**，
+    //   扇出写入永远停在 `M MEMORY.md`（实测 `F--DemoLibF` 自 09-30 12:25 起
+    //   一直未提交，仓库 HEAD 停在 09-23）。
+    //   `promote.cjs:176`（晋升目标目录）与 `apply.cjs:267`（手动路径）都提交，
+    //   **只有扇出漏了**。
+    //
+    //   ⚠️ 用 `commitPaths` 而**不是** `commitAll`：项目记忆目录是宿主与本插件
+    //   共用的，`git add -A` 会把 Claude Code 自己的记忆写入（frontmatter 无
+    //   `dream:` 块那些 .md）一起卷进 `dream(...)` 提交 —— 等于把宿主的写入记到
+    //   本插件名下。只暂存我们刚改的 `MEMORY.md`。
+    //
+    //   git 失败**不得**让已写好的指针回滚（与 `promote.cjs:177` 同一原则），
+    //   故只记录不抛出。
+    // ══════════════════════════════════════════════════════════════════════
+    let commit = null;
+    try {
+      commit = gitops.commitPaths(
+        path.dirname(target), ['MEMORY.md'],
+        `dream(fanout): ${h.project} ← global/${experienceSlug}`,
+      );
+    } catch (e) { commit = { ok: false, error: e.message }; }
+
+    applied.push({ project: h.project, action: r.action, path: target, commit });
   }
   return { applied, skipped, reason: null };
 }

@@ -72,8 +72,27 @@ function bodyFor(cand, scored, { name, originSessionId = null, now = new Date() 
 }
 
 /**
+ * 取记忆文件的**正文**（frontmatter 之后的部分）。
+ *
+ * ★ 为什么需要它：判断"这条经验是否与既有文件相同"时**不能拿整个文件比** ——
+ *   frontmatter 里有 `modified` / `promotedAt` / `stillTrueCheckedAt` / `score` /
+ *   `durability`，这些**每次运行都会变**。详见 writeBody 的注释。
+ */
+function bodyTextOf(content) {
+  const s = String(content || '');
+  if (!s.startsWith('---')) return s;
+  const end = s.indexOf('\n---', 3);
+  if (end === -1) return s;
+  const nl = s.indexOf('\n', end + 1);
+  if (nl === -1) return '';
+  // 去掉 frontmatter 与正文之间的分隔空行，让"正文"就是正文本身
+  // （契约清晰；且 `bodyFor` 生成的正文首行必非空，不会因此产生假相同）
+  return s.slice(nl + 1).replace(/^\n+/, '');
+}
+
+/**
  * 写入一条经验正文（项目级或全局）。
- * @returns {{ok:boolean, file?:string, created?:boolean, reason?:string}}
+ * @returns {{ok:boolean, file?:string, created?:boolean, unchanged?:boolean, refreshed?:boolean, reason?:string}}
  */
 function writeBody(kind, slug, name, content, { policy } = {}) {
   const pol = policy || guardMod.decideWrite();
@@ -85,7 +104,24 @@ function writeBody(kind, slug, name, content, { policy } = {}) {
   const created = !fs.existsSync(file);
   if (!created) {
     const prev = fs.readFileSync(file, 'utf8');
-    if (prev === content) return { ok: true, file, created: false, unchanged: true };
+    // ══════════════════════════════════════════════════════════════════════
+    // ★ 修正（2026-09-30）：原判据是 `prev === content` —— **比较整个文件**，
+    //   而 frontmatter 里含 `modified` / `promotedAt` / `stillTrueCheckedAt` /
+    //   `score` / `durability`，**每次运行都不同** ⇒ 该分支**永远不成立**，是死代码。
+    //
+    //   实测后果（同一 global 条目被反复提升三次：09-24 / 09-26 / 09-29）：
+    //     · 每次真重写文件 + 真产生一次 git commit（`e4749ce` 的 6+/6− 即此）
+    //     · 每次真触发一次 **G2 扇出**（那一轮 ledger 的 `g2Requests: 1`）——
+    //       对一条已存在、已分发过的条目重跑分发是纯浪费
+    //     · `applyDecisions` 按 `ok:true` 计数 ⇒ ledger.promoted 与
+    //       counters.promoted 被虚增，"产出"指标失真
+    //
+    //   改为比较**正文文本**。正文一字未改 ⇒ 不是新知识，跳过写入与 commit，
+    //   并标记 `refreshed` 供上游如实计数（而不是当成一次提升）。
+    // ══════════════════════════════════════════════════════════════════════
+    if (bodyTextOf(prev) === bodyTextOf(content)) {
+      return { ok: true, file, created: false, unchanged: true, refreshed: true };
+    }
   }
   memoryMod.writeAtomic(file, content);
   return { ok: true, file, created };
@@ -140,7 +176,7 @@ function promoteOne(cand, scored, { cfg, policy, now = new Date() } = {}) {
   try { commit = gitops.commitAll(dir, `dream(${isGlobal ? 'global' : cand.project}): ${name}`); }
   catch (e) { commit = { ok: false, error: e.message }; }   // git 失败不得让已写入的正文回滚
 
-  return { ok: true, kind: isGlobal ? 'global' : 'project', name, file: body.file, created: body.created, pointer, commit };
+  return { ok: true, kind: isGlobal ? 'global' : 'project', name, file: body.file, created: body.created, refreshed: !!body.refreshed, pointer, commit };
 }
 
-module.exports = { slugify, oneLine, bodyFor, writeBody, promoteOne, originSessionOf, GLOBAL_DURABILITY_MIN };
+module.exports = { slugify, oneLine, bodyFor, bodyTextOf, writeBody, promoteOne, originSessionOf, GLOBAL_DURABILITY_MIN };

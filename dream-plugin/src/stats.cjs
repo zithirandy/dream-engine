@@ -26,7 +26,12 @@ function countLines(files) {
 
 function collect(root) {
   const r = root || path.resolve(__dirname, '..');
-  const srcDir = path.join(r, 'src');
+  // ★ 修正（2026-09-28）：必须同时支持**开发态**与**安装态**两种布局。
+  //   开发态 `<repo>/src/*.cjs`；安装态把模块**平铺**在 `~/.claude/.dream/bin/`
+  //   下，根本没有 `src/` 目录 ⇒ 原先恒定报"有效文件 0 / 0 行"。
+  //   那是**假警报**：报告开头就是"0 有效文件"，读的人会以为引擎坏了。
+  //   有 `src/` 就用它；否则退回本模块所在的目录（安装态即 bin/）。
+  const srcDir = fs.existsSync(path.join(r, 'src')) ? path.join(r, 'src') : __dirname;
   const testDir = path.join(r, 'test');
 
   const listCjs = (dir) => (fs.existsSync(dir)

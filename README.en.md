@@ -236,6 +236,54 @@ node src/cli.cjs guard               # write policy + conflict check against the
 node src/cli.cjs config diff         # config health (drift + orphan keys)
 ```
 
+## GitHub digest (optional, **off by default**)
+
+Beyond consolidating session memory, the engine can collect repository activity:
+issues, issue comments, pull requests, PR reviews and review comments — diffed against
+the previous local snapshot so only the **delta** is reported, rendered as a Markdown digest.
+
+```bash
+node src/cli.cjs github doctor       # health: gh / credential / API reachability / repo access / report dir
+node src/cli.cjs github now          # collect once now (bypasses the built-in daily gate)
+node src/cli.cjs github now --dry    # dry run: writes no file, advances no cursor
+node src/cli.cjs github run          # run subject to the built-in daily gate (for a system scheduler)
+node src/cli.cjs github status       # config + gate verdict + recent rounds
+node src/cli.cjs github log          # structured per-round JSON log
+```
+
+**Scheduling is not part of the engine.** The engine does no system-level timing; use your
+host's own scheduler (Windows Task Scheduler / cron / a DSH task board) to call `github run`
+or `github now` — daily at 08:00 is a good default.
+
+Main config (the `github` section of `~/.claude/.dream/config.json`):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | Master switch. Installing the plugin does not mean consenting to daily egress |
+| `repos` | `[]` | Repositories to collect, `["owner/name", ...]` |
+| `transport` | `"gh"` | `gh` or `rest` (see below) |
+| `tokenSource` | `"gh"` | `gh` / `settings:NAME` / `env:NAME` |
+| `report.dir` | `null` | Output directory; `null` → `<DREAM_HOME>/github-reports` |
+| `report.writeUnchanged` | `true` | Whether to write a report on zero-change days too |
+| `report.includeBodyChars` | `3000` | Per-item body render limit |
+| `report.redactCredentials` | `true` | Redact report bodies (so a token someone pasted into an issue is not kept locally) |
+| `collection.schedule` | `"08:00"` | Daily gate time (applies to `github run` only) |
+| `collection.maxPages` | `5` | **Hard page cap** (see below) |
+
+**About the transport**: the default is `gh` (GitHub CLI), which requires `gh auth login`.
+That keeps the credential in the system keyring and **never lets it land in any file this plugin writes**.
+
+> ⚠️ **Why not `fetch` by default**: if the machine redirects `api.github.com` to a local proxy
+> via the hosts file (a common "GitHub accelerator" setup), Node's `fetch` fails with an
+> untrusted certificate chain (`UNABLE_TO_VERIFY_LEAF_SIGNATURE`) while `gh` keeps working
+> because it reads the system certificate store. Keep `transport: "gh"` on such machines;
+> on a standard network you can switch to `rest` with `settings:GITHUB_TOKEN`.
+
+> ⚠️ **Why a `maxPages` cap exists**: `gh api --paginate` has **no page limit** and can hang for
+> a very long time on repositories with huge issue counts. The collector therefore pages
+> manually under this cap and warns explicitly in the report when it truncates, instead of
+> silently returning half the data.
+
 ## Uninstall / rollback
 
 ```bash

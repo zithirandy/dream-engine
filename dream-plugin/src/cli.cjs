@@ -1,16 +1,25 @@
 'use strict';
 /**
- * cli.cjs —— dreamctl：P0 全部运维护命令。
+ * cli.cjs —— dreamctl：全部运维与诊断命令的唯一入口。
  *
- *   install    把开发态源码复制到 ~/.claude/.dream/bin/（安装态）
+ *   install    把开发态源码复制到 ~/.claude/.dream/bin/（安装态；并清理源中已删除的陈旧模块）
  *   init       建目录 + token + state + config + 扫描项目 + git 化
- *   status     门控/锁/引擎/config 一览
+ *   status     门控/锁/引擎/config 一览（`--live` 含引擎在线探活）
  *   doctor     全面体检（含风险 7 探针）
  *   start      拉起引擎（带 windowsHide）
  *   stop       通过 HTTP 优雅关闭
- *   rollback   列出内容仓库与最近提交（P0 只读；apply 在 P3）
+ *   rollback   列出内容仓库与最近提交（只读；回退动作在 apply）
  *   projects   列出/刷新 state.projects
+ *   ingest     采集转录 → 提炼候选
+ *   dryrun / extract / candidates / stats / support / label / precision / compare / risk8 / guard
+ *   dream      手动梦四步（prepare → 宿主产提案 → validate → apply）
+ *   auto       自动梦：status / once（含"现在会不会跑及理由"）
+ *   config     get / set / diff（diff 含漂移与**孤儿键**守卫）
+ *   jevtest    评分服务连通与分块实测（会出网）
+ *   github     GitHub 动态采集：run / now / status / doctor / log
+ *              （`schedule` 已于 2026-09-29 移除：调度交由宿主的定时机制承担）
  *   hook       hook 入口（转 nudge.cjs）
+ *   hostcheck  Host 头白名单自检
  */
 const fs = require('fs');
 const path = require('path');
@@ -24,6 +33,8 @@ const projectsMod = require('./projects.cjs');
 const gitops = require('./gitops.cjs');
 const log = require('./log.cjs');
 const serverMod = require('./server.cjs');
+const githubMod = require('./github.cjs');
+const githubApiMod = require('./github-api.cjs');
 
 const SRC = __dirname;
 const PKG = path.resolve(__dirname, '..', 'package.json');
@@ -46,6 +57,30 @@ function cmdInstall() {
   fs.copyFileSync(PKG, path.join(p.home, 'package.json'));
   console.log(`已安装 ${files.length} 个模块 → ${p.bin}`);
   console.log(`package.json → ${path.join(p.home, 'package.json')}`);
+
+  // ★ 修正（2026-09-29）：install 此前**只拷贝、不清理** —— 源里删掉的模块会以
+  //   **陈旧文件**的形式永远留在安装态。
+  //   实测代价：删掉 `schtasks.cjs` 后重装，`bin/` 仍是 40 个而 `src/` 是 39 个，
+  //   于是 `stats` 的"代码规模"多算一个文件（而 `stats` 正是每日审查会读的），
+  //   更糟的是被删模块仍可被 `require` 到 —— "删了但还在"极难自查。
+  //   ⇒ 把 bin 里**源中已不存在**的 .cjs 清掉（白名单式：只处理 .cjs，
+  //     且要求文件名是形如 `xxx.cjs` 的模块名，绝不碰其它任何文件）。
+  const pruned = [];
+  try {
+    for (const f of fs.readdirSync(p.bin)) {
+      if (!f.endsWith('.cjs')) continue;                 // 只清理模块文件
+      if (files.includes(f)) continue;                   // 源里还有 ⇒ 保留
+      // 双保险：必须是 bin 根下的普通文件，且名字不含路径分隔符
+      if (f !== path.basename(f)) continue;
+      const full = path.join(p.bin, f);
+      if (!fs.statSync(full).isFile()) continue;
+      fs.unlinkSync(full);
+      pruned.push(f);
+    }
+  } catch (e) {
+    console.log(`⚠️ 清理陈旧模块失败（不影响本次安装）：${e.message}`);
+  }
+  if (pruned.length) console.log(`已清理 ${pruned.length} 个源中已不存在的陈旧模块：${pruned.join(', ')}`);
 
   // ★ 核验 §5.1：把全量默认值落进 config.json（用户值优先，只补缺失键）
   const mat = configMod.materialize();
@@ -748,8 +783,19 @@ async function cmdAuto({ op = 'status', force = false, dry = false, json = false
   const lock = lockMod.readLock();
   const a = cfg.autoDream || {};
 
+  // ★ 修正（2026-09-28）：`auto status` 问的是「**守护进程**现在会不会跑」。
+  //   `decide()` 用 `lock.pid !== selfPid` 判定"锁被别人占"，而 CLI 传的 selfPid
+  //   是**自己的** pid ⇒ 守护进程只要活着，就**恒定**报 `lock-held` 并把它列为
+  //   阻塞理由。实测这会每天误导审查（结论变成"自动梦被锁挡住、跑不了"），
+  //   而真相是：那把锁本来就是守护进程自己持有的，**不阻塞它自己**。
+  //   ⇒ status 把锁的持有者当成 selfPid；`once` 仍用真实 pid —— 那时 CLI 是
+  //     **另一个进程**，"锁被占"确实意味着可能与守护进程重叠跑一轮，必须拦。
+  const selfPid = op === 'once'
+    ? process.pid
+    : ((lock && lock.exists && lock.alive && lock.pid) ? lock.pid : process.pid);
+
   const verdict = autoMod.decide({
-    cfg, state, pending, lock, nowMs: Date.now(), running: false, selfPid: process.pid, force,
+    cfg, state, pending, lock, nowMs: Date.now(), running: false, selfPid, force,
     // 仅"运维显式 --force 跑一次"允许没有未消费事件（等价于 dreamctl dream 的人工意图）。
     // 不带 --force 时**不能**放开 —— 否则 `auto once` 会在安静期意外跑一轮付费梦。
     allowNoEvents: force && op === 'once',
@@ -821,7 +867,12 @@ async function cmdAuto({ op = 'status', force = false, dry = false, json = false
   console.log(`  上次自动梦   ${state.lastAutoDreamAt || '从未'}${state.lastAutoDreamOk === false ? ' ⚠ 上次失败' : ''}`);
   console.log(`  计数         autoRuns=${(state.counters || {}).autoRuns || 0} autoFailures=${(state.counters || {}).autoFailures || 0}`);
   if (state.lastAutoDreamError) console.log(`  最近错误     [${state.lastAutoDreamError.phase}] ${state.lastAutoDreamError.error} @ ${state.lastAutoDreamError.at}`);
-  console.log(`  守护锁       ${lock.exists ? (lock.alive ? `pid ${lock.pid}（存活）` : `pid ${lock.pid}（已死，视为残留）`) : '无'}`);
+  // ★ 锁的行文必须说清"是谁的锁"：守护进程自己持有的锁对**它自己**不构成阻塞，
+  //   但对**本 CLI 进程**（`auto once`）构成阻塞 —— 两者结论相反，含糊会误导。
+  if (!lock.exists) console.log('  守护锁       无（守护进程未在运行 —— 自动梦不会自己跑，只能手动 once）');
+  else if (lock.alive && op !== 'once') console.log(`  守护锁       pid ${lock.pid}（存活 · **由守护进程自己持有**，不阻塞它自己的下一轮）`);
+  else if (lock.alive) console.log(`  守护锁       pid ${lock.pid}（存活 · 被**另一个进程**持有 ⇒ 本 CLI 不能并发跑 once）`);
+  else console.log(`  守护锁       pid ${lock.pid}（已死，视为残留）`);
   console.log('');
   console.log(`  ▶ 现在会跑吗 ${verdict.pass ? '✅ 会（下一 tick 即执行）' : '⛔ 不会'}`);
   if (!verdict.pass) for (const r of verdict.reasons) console.log(`      · ${r}`);
@@ -979,9 +1030,175 @@ function cmdConfig({ action = 'get', dotted = null, pairs = [], json = false } =
   return config;
 }
 
+// ---------------------------------------------------------------- github
+/**
+ * `github` 子命令族。
+ *
+ *   github run            按闸门判定后跑一轮（计划任务调的就是这个）
+ *   github now            忽略闸门立刻跑一轮（--dry 干跑）
+ *   github status         配置 + 闸门判定 + 最近几轮
+ *   github doctor         凭据 / gh / 传输 / 网络 / 仓库连通性逐项体检
+ *   github schedule ...   注册/注销/查看 Windows 计划任务
+ *   github log [--limit]  最近几轮的结构化日志
+ */
+async function cmdGithub({ op = 'status', sub = 'status', dry = false, force = false, json = false, limit = 10, since = null, repo = null, time = null } = {}) {
+  const { config } = configMod.load();
+
+  // ---------- run / now ----------
+  if (op === 'run' || op === 'now' || op === 'digest') {
+    const isNow = op !== 'run' || force;
+    const rec = await githubMod.runOnce({
+      cfg: config, dry, force: isNow,
+      sinceOverride: since,
+      reposOverride: repo ? [repo] : null,
+    });
+
+    if (json) { console.log(JSON.stringify(rec, null, 2)); return rec; }
+
+    if (rec.skipped) {
+      console.log(`本轮**未运行** —— ${rec.reason}`);
+      console.log(`  判定：${JSON.stringify(rec.verdict.detail)}`);
+      if (!isNow) console.log('  （想立刻跑请用 `node cli.cjs github now`）');
+      return rec;
+    }
+    if (!rec.ok && rec.error === 'credential-unavailable') {
+      console.error(`✗ 凭据不可用：${rec.reason}`);
+      if (rec.hint) console.error(`  提示：${rec.hint}`);
+      if (rec.detail) console.error(`  详情：${rec.detail}`);
+      process.exitCode = 1;
+      return rec;
+    }
+    if (rec.error) {
+      console.error(`✗ ${rec.error}${rec.hint ? ` —— ${rec.hint}` : ''}`);
+      process.exitCode = 1;
+      return rec;
+    }
+
+    const d = rec.delta || {};
+    console.log(`${dry ? '（干跑）' : ''}采集完成 · ${rec.repos.join(', ')}`);
+    console.log(`  窗口起点  ${rec.since}`);
+    console.log(`  耗时      ${rec.durationMs} ms · 凭据 ${rec.credentialFrom}`);
+    console.log(`  变化      新增 ${d.added} · 更新 ${d.updated} · 关闭 ${d.closed} · 重开 ${d.reopened} · 未变 ${d.unchanged}`);
+    if (rec.redactedHits) console.log(`  ⚠️ 报告正文脱敏 ${rec.redactedHits} 处疑似凭据`);
+    if (rec.truncated) console.log('  ⚠️ 有条目因 maxPages 上限被截断，报告可能不完整');
+    if (rec.errors && rec.errors.length) {
+      console.log(`  ⚠️ ${rec.errors.length} 个采集错误（详见报告末节）`);
+      for (const e of rec.errors.slice(0, 5)) console.log(`     · ${e.source}${e.repo ? '@' + e.repo : ''} → ${e.error} ${e.detail || ''}`);
+    }
+    if (dry) {
+      console.log('\n--- 干跑报告预览（前 60 行）---');
+      console.log(String(rec.markdown || '').split('\n').slice(0, 60).join('\n'));
+      console.log('--- 预览结束（干跑不写文件、不推进游标）---');
+    } else if (rec.wroteReport) {
+      console.log(`  报告      ${rec.reportPath}`);
+    } else {
+      console.log(`  报告      本轮零变化且 report.writeUnchanged=false，未落新文件`);
+      if (rec.reportPath) console.log(`  上次报告  ${rec.reportPath}`);
+    }
+    return rec;
+  }
+
+  // ---------- log ----------
+  if (op === 'log') {
+    const rows = githubMod.readLog(limit);
+    if (json) { console.log(JSON.stringify(rows, null, 2)); return rows; }
+    hr(`最近 ${rows.length} 轮`);
+    for (const r of rows) {
+      if (r._unparsable) { console.log(`  (无法解析) ${r._unparsable}`); continue; }
+      const d = r.delta || {};
+      console.log(`  ${r.at}  ok=${r.ok}  新增${d.added || 0}/更新${d.updated || 0}/关闭${d.closed || 0}  ${r.durationMs || '?'}ms  err=${r.errors || 0}`);
+      if (r.reportPath) console.log(`      ${r.reportPath}`);
+    }
+    return rows;
+  }
+
+  // ---------- doctor ----------
+  if (op === 'doctor') {
+    const g = config.github || {};
+    const checks = [];
+    const add = (name, ok, detail, hint) => checks.push({ name, ok, detail: detail || '', hint: hint || '' });
+
+    add('github.enabled', g.enabled === true, g.enabled === true ? '已开启' : '未开启', 'config set github.enabled=true');
+    add('repos', Array.isArray(g.repos) && g.repos.length > 0, JSON.stringify(g.repos || []), 'config set github.repos=["owner/name"]');
+
+    const ghP = githubApiMod.ghPath(config);
+    add('gh 可执行文件', !!ghP, ghP || '未找到', '安装 GitHub CLI，或设 github.ghPath');
+
+    const cred = githubApiMod.resolveToken(config);
+    add('凭据', cred.ok, cred.ok ? `来源 ${cred.from}` : `${cred.reason} ${cred.detail || ''}`, cred.hint || 'gh auth login');
+
+    if (cred.ok) {
+      // 真实打一次 API：只看连通与配额，不消耗（rate_limit 不计费）
+      const rl = await githubApiMod.rateLimit({ cfg: config, token: cred.token });
+      add('API 连通', rl.ok, rl.ok ? `核心配额剩余 ${rl.core ? rl.core.remaining : '?'}/${rl.core ? rl.core.limit : '?'}${rl.core ? `（${rl.core.resetAt} 重置）` : ''}` : `${rl.error} ${rl.detail || ''}`,
+        rl.error === 'tls-untrusted' ? '本机 TLS 中间人：用 transport=gh' : null);
+
+      for (const r of (g.repos || [])) {
+        const one = await githubApiMod.paginate({ path: `repos/${r}`, cfg: config, token: cred.token, perPage: 1, maxPages: 1 });
+        const meta = one.items && one.items[0];
+        add(`仓库 ${r}`, one.ok, one.ok ? `可访问${meta && meta.full_name ? `（${meta.full_name}）` : ''}` : `${one.errors[0] && one.errors[0].error} ${one.errors[0] && one.errors[0].detail}`,
+          one.errors[0] && one.errors[0].status === 404 ? '检查仓库名/权限（私有仓库需要 repo scope）' : null);
+      }
+    }
+
+    const dir = githubMod.reportDir(config);
+    let dirOk = true; let dirDetail = dir;
+    try { fs.mkdirSync(dir, { recursive: true }); } catch (e) { dirOk = false; dirDetail = `${dir} —— ${e.message}`; }
+    add('报告目录可写', dirOk, dirDetail);
+
+    // ★ 2026-09-29：原先这里检查 Windows 计划任务是否注册，恒定报 ✗（用户已明确
+    //   不用系统计划任务，调度交给 DSH 任务看板）。改为**如实说明调度归属**，
+    //   而不是报一个不存在的"缺项"—— 假 ✗ 会让人以为功能没装好。
+    add('调度层', true, '由 DSH 任务看板承担（引擎不做系统级调度）',
+      '在 DSH Web GUI 的任务看板里建卡；引擎侧的日闸门仍对 `github run` 生效');
+
+    if (json) { console.log(JSON.stringify(checks, null, 2)); return checks; }
+    hr('GitHub 采集体检');
+    for (const c of checks) {
+      console.log(`  ${c.ok ? '✓' : '✗'} ${c.name.padEnd(18)} ${c.detail}`);
+      if (!c.ok && c.hint) console.log(`      → ${c.hint}`);
+    }
+    return checks;
+  }
+
+  // ---------- schedule（已移除，2026-09-29） ----------
+  // 原先这里调 `schtasks.cjs` 注册 Windows 计划任务。用户明确不用系统计划任务，
+  // 调度交给 **DSH 任务看板**（cron `0 8 * * *`）。保留一个"已移除"的明确答复 +
+  // 迁移指引，比让子命令静默消失更好 —— 否则旧的肌肉记忆会得到一个费解的
+  // "未知子命令"或退化成 status，让人以为它还在工作。
+  if (op === 'schedule') {
+    const msg = [
+      '`github schedule` 已移除（2026-09-29）：本插件不再注册 Windows 计划任务。',
+      '调度改由 **DSH 任务看板**承担 —— 在 DSH Web GUI 的任务看板里建卡，',
+      'Prompt 里执行 `node <DREAM_HOME>\\bin\\cli.cjs github now`。',
+      '参考：F:\\Demo\\dream-src\\AutoDream-GitHub日报任务看板提示词.md',
+      '存档：F:\\Demo\\dream-src\\archive\\schtasks-removed-2026-09-29\\',
+    ];
+    if (json) { console.log(JSON.stringify({ ok: false, error: 'removed', notes: msg }, null, 2)); process.exitCode = 2; return { ok: false, error: 'removed' }; }
+    for (const m of msg) console.log('  ' + m);
+    process.exitCode = 2;
+    return { ok: false, error: 'removed' };
+  }
+
+  // ---------- status（默认） ----------
+  const s = githubMod.status(config);
+  if (json) { console.log(JSON.stringify(s, null, 2)); return s; }
+  hr('GitHub 采集状态');
+  console.log(`  开关        ${s.enabled ? '开' : '关'}   传输 ${s.transport}   凭据 ${s.tokenSource}`);
+  console.log(`  每日时刻    ${s.schedule}`);
+  console.log(`  仓库        ${(s.repos || []).join(', ') || '(未配置)'}`);
+  console.log(`  报告目录    ${s.reportDir}`);
+  console.log(`  已跑轮数    ${s.runs}   追踪条目 ${s.trackedItems}`);
+  console.log(`  上次运行    ${s.lastRunAt || '—'}${s.lastRunOk === null || s.lastRunOk === undefined ? '' : `（${s.lastRunOk ? '成功' : '有错误'}）`}`);
+  if (s.lastReportPath) console.log(`  最新报告    ${s.lastReportPath}`);
+  if (s.latestReport) console.log(`  目录最新    ${s.latestReport.file}（${s.latestReport.bytes} B，${s.latestReport.mtime}）`);
+  if (s.lastError) console.log(`  ⚠️ 上轮错误  ${JSON.stringify(s.lastError)}`);
+  console.log(`  闸门判定    ${s.verdict.pass ? '✅ 现在该跑' : '⏸ ' + s.verdict.reasons.join('; ')}`);
+  return s;
+}
+
 // ---------------------------------------------------------------- main
-async function main() {
-  const argvAll = process.argv.slice(2);
+async function main() {  const argvAll = process.argv.slice(2);
   const [cmd, ...rest] = argvAll;
   const has = (f) => rest.includes(f);
   const argVal = (name, dflt) => {
@@ -1117,6 +1334,28 @@ async function main() {
     case 'hook': {
       process.argv = [process.argv[0], require.resolve('./nudge.cjs'), ...rest];
       await require('./nudge.cjs').main();
+      break;
+    }
+    case 'github':
+    case 'gh': {
+      // github [run|now|status|doctor|log] [...]
+      // `schedule` 已于 2026-09-29 移除，但仍列在 KNOWN 里 —— 这样它会走到
+      // cmdGithub 里那条明确的"已移除 + 迁移指引"分支，而不是退化成 status
+      // 让人以为还能用。
+      const KNOWN = ['run', 'now', 'digest', 'status', 'doctor', 'log', 'schedule'];
+      const first = rest[0] && !rest[0].startsWith('--') ? rest[0] : null;
+      const op = first && KNOWN.includes(first) ? first : 'status';
+      const sub = op === 'schedule' ? (rest[1] && !rest[1].startsWith('--') ? rest[1] : 'status') : 'status';
+      await cmdGithub({
+        op, sub,
+        dry: has('--dry'),
+        force: has('--force'),
+        json: has('--json'),
+        limit: Number(argVal('--limit', 10)) || 10,
+        since: argVal('--since', null),
+        repo: argVal('--repo', null),
+        time: argVal('--time', null),
+      });
       break;
     }
     case 'hostcheck': {

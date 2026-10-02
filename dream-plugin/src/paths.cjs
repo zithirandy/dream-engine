@@ -52,6 +52,14 @@ function paths() {
     // ★ P5 自动梦专用日志：每轮一行 JSON（跑没跑、为什么、结果）。
     //   与 daemon.log（进程级）分开，便于 `auto status` 直接读。
     autoLog: path.join(home, 'logs', 'auto-dream.jsonl'),
+    // ★ GitHub 采集：与自动梦**完全分开**的三份状态。
+    //   理由见 github.cjs 文件头 —— 两者的触发语义（事件驱动 vs 墙上时钟）、
+    //   失败重试语义、数据来源（本地转录 vs 外部网络）都不同，共用会互相踩。
+    //   `githubReports` 只是**默认**输出目录；实际目录由 `github.report.dir`
+    //   覆盖（用户要求落到仓库外的固定位置）。
+    githubState: path.join(home, 'raw', 'github-state.json'),
+    githubLog: path.join(home, 'logs', 'github.jsonl'),
+    githubReports: path.join(home, 'github-reports'),
     // 宿主记忆根
     projectsRoot: path.join(claudeHome(), 'projects'),
   };
@@ -60,7 +68,7 @@ function paths() {
 /** 所有需要在 init 时创建的目录 */
 function dirsToCreate() {
   const p = paths();
-  return [p.home, p.bin, p.logs, p.raw, p.candidates, p.rejected, p.global, p.proposals, p.reports, p.redacted];
+  return [p.home, p.bin, p.logs, p.raw, p.candidates, p.rejected, p.global, p.proposals, p.reports, p.redacted, p.githubReports];
 }
 
 module.exports = {

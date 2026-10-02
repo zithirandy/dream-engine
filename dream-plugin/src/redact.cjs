@@ -19,6 +19,17 @@ const CREDENTIAL_PATTERNS = [
   [/\bsk-ant-[A-Za-z0-9_-]{16,}\b/g, '[REDACTED:sk-ant]'],
   // TypeSafe
   [/\bapikey_[A-Za-z0-9_]{16,}\b/gi, '[REDACTED:apikey]'],
+  // ★ GitHub 令牌值形态。
+  //   为什么必须单独列：上面那条 `GITHUB_TOKEN=` 规则认的是**变量名**，
+  //   而 issue/评论里泄漏的通常是**裸值**（`ghp_…`）。实测取证：
+  //   `我的 token 是 ghp_AAAA…（40 字符）` 在补齐本规则前**完全不被脱敏**
+  //   —— 两条 HIGH_ENTROPY 都救不了它（hex 分支要 40 位纯十六进制，
+  //   blob 分支要 ≥60 位且不含 `_`，而 `ghp_` 正好把它切成两段）。
+  //   本项目自己的 `tools/_audit-public-thorough.cjs` 早就有 ghp 规则并据此
+  //   拦下过一次真实泄漏，`redact.cjs` 却没有 —— 这是两边不对称的漏洞。
+  //   下界取 20（比 GitHub 实际的 36 位宽松）：宁可多脱敏粘贴到一半的残片。
+  [/\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\b/g, '[REDACTED:github-token]'],
+  [/\bgithub_pat_[A-Za-z0-9_]{20,}\b/g, '[REDACTED:github-pat]'],
   // Bearer / token 赋值
   [/\bBearer\s+[A-Za-z0-9._-]{16,}/gi, 'Bearer [REDACTED]'],
   [/\b(ANTHROPIC_AUTH_TOKEN|ANTHROPIC_API_KEY|TYPESAFE_API_KEY|AWS_SECRET_ACCESS_KEY|GITHUB_TOKEN|GH_TOKEN|Z_API_KEY|OBSIDIAN_API_KEY|PGPASSWORD|MYSQL_PWD)\b\s*[:=]\s*["']?[^\s"',}]{4,}/g, '$1=[REDACTED]'],

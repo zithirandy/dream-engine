@@ -85,6 +85,12 @@ function applyDecisions(decisions, candById, { cfg, policy, dryRun = false, runG
     promoted.push({ candId: d.candId, ...r });
     if (!r.ok) continue;
 
+    // ★ 修正（2026-09-30）：`refreshed` = 目标文件已存在且**正文逐字相同**
+    //   （由 `promote.writeBody` 判定）。那不是新知识，只是一次元数据重算 ——
+    //   既不该再进 `globalExperiences`（否则下游 G2 会对一条**已经分发过**的
+    //   global 条目重跑扇出，实测每轮白花 1 次调用），也不该被上游计成"提升"。
+    if (r.refreshed) continue;
+
     if (r.kind === 'global') {
       globalExperiences.push({ name: r.name, candId: d.candId });
       if (runG2) fanout.push({ name: r.name, candId: d.candId, pending: true });
@@ -225,11 +231,26 @@ async function autoDream(opts = {}) {
     try {
       stateUpdate = stateMod.update((s) => {
         s.counters = s.counters || {};
-        s.counters.promoted = (s.counters.promoted || 0) + applied.promoted.filter((x) => x.ok).length;
+        // ★ 修正（2026-09-30）：只把**真正新写入**的算作提升。
+        //   `refreshed`（正文逐字相同、只重算元数据）此前也被计进来，
+        //   于是"产出"指标虚增 —— 实测同一条目三次提升里有两次是刷新。
+        s.counters.promoted = (s.counters.promoted || 0) + applied.promoted.filter((x) => x.ok && !x.refreshed).length;
+        s.counters.promotedRefreshed = (s.counters.promotedRefreshed || 0) + applied.promoted.filter((x) => x.ok && x.refreshed).length;
         s.counters.globalPromoted = (s.counters.globalPromoted || 0) + applied.globalExperiences.length;
         s.counters.dreamRuns = (s.counters.dreamRuns || 0) + 1;
         s.counters.dreamHeld = (s.counters.dreamHeld || 0) + decisions.summary.hold;
         s.counters.dreamRejected = (s.counters.dreamRejected || 0) + decisions.summary.reject;
+        // ★ 2026-09-29：补上 `state.jev` —— 此前它被定义、被展示、却**从未被写入**
+        //   （死状态），于是永远显示 0 次调用 / 0 tokens，与 ledger 里的真实用量矛盾。
+        //   这里 `scoring.model/calls/tokensIn/tokensOut` 与 `g2.calls` 都在作用域内，
+        //   零额外开销。口径与 ledger 对齐：`requests`=Jev 调用数，`g2Requests`=G2 调用数，
+        //   `requests + g2Requests` 即 ledger 的 `jevRequestsTotal`。
+        s.jev = s.jev || {};
+        s.jev.lastModel = scoring.model || s.jev.lastModel || null;
+        s.jev.requests = (s.jev.requests || 0) + (scoring.calls || 0);
+        s.jev.g2Requests = (s.jev.g2Requests || 0) + (g2.calls || 0);
+        s.jev.tokensIn = (s.jev.tokensIn || 0) + (scoring.tokensIn || 0);
+        s.jev.tokensOut = (s.jev.tokensOut || 0) + (scoring.tokensOut || 0);
         s.lastDreamAt = new Date().toISOString();
         return s;
       });
@@ -246,7 +267,11 @@ async function autoDream(opts = {}) {
     //   发了调用（实测真实写入时 G2 发了 2 次，账本却是 0，成本统计因此漏算）。
     g2Requests: g2.calls,
     jevRequestsTotal: scoring.calls + g2.calls,
-    promoted: applied.promoted.filter((p) => p.ok).length,
+    promoted: applied.promoted.filter((p) => p.ok && !p.refreshed).length,
+    // ★ 2026-09-30 新增：正文未变、只重算元数据的条数。
+    //   与 `promoted` **分开记**，否则 ledger 的"产出"口径会把刷新也当成新知识
+    //   （这正是"同一条目三次提升"看起来像三次产出的原因）。
+    refreshed: applied.promoted.filter((p) => p.ok && p.refreshed).length,
     globalPromoted: applied.globalExperiences.length,
     globalFanout: g2.applied.map((a) => a.project),
     toCandidates: decisions.summary.hold,

@@ -247,9 +247,88 @@ const DEFAULTS = {
     pendingEventsMaxBytes: 2097152,   // 2 MB ≈ 1.9 万事件 ≈ 数月
   },
 
+  // ══════════════════════════════════════════════════════════════════════
+  // GitHub 采集（每早定时拉取 issue / 评论 / PR 并出报告）
+  // ══════════════════════════════════════════════════════════════════════
+  // 与 autoDream 完全独立：那一个由"会话结束"事件驱动，这一个由墙上时钟驱动。
+  github: {
+    // 默认关：装插件不等于同意它每天出网打 GitHub（与 autoDream 同一原则）。
+    enabled: false,
+
+    // 要采集的仓库，`owner/name`。空数组 = 不跑（并给出配置提示）。
+    // ⚠️ 不用 `github.repo` 单数形式：多仓库是自然的扩展方向，一开始就用数组。
+    repos: [],
+
+    // 传输层。默认 'gh' —— 见 github-api.cjs 文件头：本机 hosts 把 api.github.com
+    // 劫持到 127.0.0.1 做 TLS 中间人，Node 裸 fetch 必然 UNABLE_TO_VERIFY_LEAF_SIGNATURE，
+    // 而 hook/daemon 是以不带 --use-system-ca 的 `node xxx.cjs` 拉起的，无法自救。
+    // 'rest' 仅在证书链可信的环境可用（那时会给 fetch 带上 token）。
+    transport: 'gh',
+
+    // gh 可执行文件路径。null = 自动定位（PATH → 常见安装位置）。
+    ghPath: null,
+
+    // 凭据来源，三种互斥取值：
+    //   'gh'                      —— 问已登录的 gh CLI 要 token（存在 Windows 凭据管理器，
+    //                                **从不落到本插件任何文件**）。默认值。
+    //   'settings:GITHUB_TOKEN'   —— 从宿主 settings.json 的 env 读，与 jev.keySource 同约定。
+    //   'env:GITHUB_TOKEN'        —— 进程环境变量（显式非默认例外）。
+    // ⚠️ 无论哪种，token **绝不进日志**，对外只报 from= 出处。
+    tokenSource: 'gh',
+
+    report: {
+      // 报告输出目录。null = <DREAM_HOME>/github-reports。
+      // 用户可指向任意绝对路径（含空格/中文/&，故**不要**用 CLI 传参设置，
+      // 直接改 config.json —— shell 会截断 `&`）。
+      dir: null,
+      filePrefix: 'GitHub日报',
+      // 每条正文最多渲染多少字符（状态文件不存正文，故这只影响报告体积）
+      includeBodyChars: 3000,
+      // true = 即使本轮零变化也照常出报告（每天一份留痕）
+      writeUnchanged: true,
+      // 报告正文过 redact.cjs：别人可能在 issue 里贴 token，本地报告不该把它存下来
+      redactCredentials: true,
+    },
+
+    collection: {
+      // 每天的应跑时刻（本地时间 HH:MM）。计划任务与闸门都读这个值。
+      schedule: '08:00',
+      // 首次运行（无历史游标）时往前回溯多少天，防止无界拉取
+      maxAgeDays: 30,
+      // 两次运行之间的窗口重叠，兜住时钟偏差与"上一轮跑到一半"
+      overlapMinutes: 10,
+      perPage: 100,
+      // ★ 硬上限：`gh api --paginate` **没有页数上限**，实测对 issue 巨多的仓库
+      //   会挂死 120s+。故采集器自己翻页并受此值约束，触顶会在报告里显式告警。
+      maxPages: 5,
+      // 单个 API 调用的超时（spawnSync timeout 实测能 SIGTERM 兜住不挂死）
+      timeoutMs: 30000,
+      // PR review 端点无 since，只能逐 PR 拉；限制每轮最多补采几个 PR
+      maxReviewPrs: 20,
+      sources: {
+        issues: true,
+        issueComments: true,
+        prs: true,
+        prReviews: true,
+        prReviewComments: true,
+        // 通知是跨仓库的，且与上面的条目大量重复 ⇒ 默认关
+        notifications: false,
+      },
+    },
+
+    // ⚠️ 已移除（2026-09-29）：原 `github.schedule: { taskName, catchUp }` 随
+    //   `schtasks.cjs` 一起删掉了。调度改由 **DSH 任务看板**承担。
+    //
+    //   删它的直接原因不是"没用"，而是**它在主动误导**：
+    //     · `github doctor` 会恒定报 `✗ 计划任务 未注册 → …schedule install`；
+    //     · 每日审查报告会拿 `taskName` 去找一个**已被特意注销**的 Windows 任务，
+    //       结果在报告里写成"无法确认守护进程的调度载体"。
+    //   残留配置产生的是**假线索**，不是冗余 —— 这是删掉而非保留的理由。
+    //   归档见 `archive/schtasks-removed-2026-09-29/`。
+  },
+
   server: { host: '127.0.0.1', port: pathsMod.DEFAULT_PORT, requireToken: true },
 };
-
 function deepMerge(base, over) {
   if (over === null || over === undefined) return base;
   if (Array.isArray(base) || Array.isArray(over)) return over;
